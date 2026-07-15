@@ -272,6 +272,23 @@ CUSTOM_COLUMN_DEFAULTS = {
             default=str
         )),
     },
+    'column_next_retry': {
+        'first_in_group': True,
+        'column_heading': _("KOReader Next Retry"),
+        'datatype': 'datetime',
+        'description': _("Date after which a book the ProgressSync server has no "
+                         "entry for will be re-checked. Managed by the plugin; "
+                         "leave unmapped to disable the retry cooldown."),
+        'default_lookup_name': '#ko_nextretry',
+        'config_label': _('Next retry column (optional):'),
+        'config_tool_tip': _('An optional "Date" column. When mapped, a book the '
+                             'ProgressSync server has no entry for is skipped until '
+                             'this date passes, instead of being re-queried on every '
+                             'sync. Books still marked "reading" are always synced.'),
+        # Not sourced from the sidecar — the plugin writes this itself, so it is
+        # deliberately given no 'data_location' and is skipped by sync_to_calibre.
+        'data_source': 'plugin',
+    },
 }
 
 CHECKBOXES = {  # Each entry in the below dict is keyed with config_name
@@ -320,6 +337,7 @@ CONFIG.defaults['progress_sync_username'] = ''
 CONFIG.defaults['progress_sync_password'] = ''
 CONFIG.defaults['scheduleSyncHour'] = 4
 CONFIG.defaults['scheduleSyncMinute'] = 0
+CONFIG.defaults['progress_sync_retry_cooldown_days'] = 7
 CONFIG.defaults['main_action'] = 'KOReader Sync'
 
 if numeric_version >= (5, 5, 0):
@@ -440,6 +458,24 @@ class ConfigWidget(QWidget):  # https://doc.qt.io/qt-5/qwidget.html
         scheduled_sync_layout.addWidget(self.schedule_minute_input)
         layout.addLayout(scheduled_sync_layout)
 
+        # Add no-entry retry cooldown option
+        retry_cooldown_layout = QHBoxLayout()
+        retry_cooldown_layout.setAlignment(Qt.AlignLeft)
+        retry_cooldown_label = QLabel('No-entry retry cooldown:')
+        retry_cooldown_label.setToolTip(
+            'Books the ProgressSync server has no entry for are re-checked only '
+            'after this many days (needs the optional "Next retry" column mapped). '
+            'Set to 0 to re-check every sync.')
+        retry_cooldown_layout.addWidget(retry_cooldown_label)
+        self.retry_cooldown_input = QSpinBox()
+        self.retry_cooldown_input.setRange(0, 365)
+        self.retry_cooldown_input.setValue(
+            CONFIG['progress_sync_retry_cooldown_days'])
+        self.retry_cooldown_input.setSuffix(' days')
+        self.retry_cooldown_input.wheelEvent = lambda event: event.ignore()
+        retry_cooldown_layout.addWidget(self.retry_cooldown_input)
+        layout.addLayout(retry_cooldown_layout)
+
         # Add ProgressSync Account button
         progress_sync_button = QPushButton('Add ProgressSync Account', self)
         progress_sync_button.clicked.connect(self.show_progress_sync_popup)
@@ -477,6 +513,7 @@ class ConfigWidget(QWidget):  # https://doc.qt.io/qt-5/qwidget.html
         # Save Scheduled ProgressSync Settings
         CONFIG['scheduleSyncHour'] = self.schedule_hour_input.value()
         CONFIG['scheduleSyncMinute'] = self.schedule_minute_input.value()
+        CONFIG['progress_sync_retry_cooldown_days'] = self.retry_cooldown_input.value()
         # NOTE: Server/Credentials are saved by the ProgressSyncPopup
 
         debug_print('new CONFIG = ', CONFIG)
