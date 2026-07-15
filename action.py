@@ -2,7 +2,7 @@
 
 """KOReader Sync Plugin for Calibre."""
 
-from datetime import datetime
+from datetime import datetime, timedelta
 from functools import partial
 import io
 import json
@@ -243,6 +243,17 @@ class KoreaderAction(InterfaceAction):
                         "that push straight to ProgressSync without ever "
                         "running real KOReader software (see issue #150).",
             triggered=self.calculate_missing_md5_hashes
+        )
+
+        self.create_menu_action(
+            self.qaction.menu(),
+            'Sync from ProgressSync (full rescan)',
+            'Sync from ProgressSync (full rescan)',
+            icon='convert.png',
+            description="Run ProgressSync ignoring the no-entry retry cooldown, "
+                        "re-checking every eligible book.",
+            triggered=partial(
+                self.sync_progress_from_progresssync, ignore_cooldown=True)
         )
 
         self.qaction.menu().addSeparator()
@@ -971,7 +982,7 @@ class KoreaderAction(InterfaceAction):
                     'error'
                 )
 
-    def sync_progress_from_progresssync(self, silent=False):
+    def sync_progress_from_progresssync(self, silent=False, ignore_cooldown=False):
         """Use KOReader's ProgressSync Server to update Calibre metadata rather than a manual sync.
 
         Intended to easily update Calibre with the latest reading progress from KOReader.
@@ -1007,6 +1018,8 @@ class KoreaderAction(InterfaceAction):
 
         status_key = CONFIG['column_status']
         read_percent_key = CONFIG['column_percent_read_int'] or CONFIG['column_percent_read']
+        next_retry_key = CONFIG['column_next_retry']
+        cooldown_days = CONFIG['progress_sync_retry_cooldown_days']
         if read_percent_key == '' or status_key == '':
             error_dialog(
                 self.gui,
@@ -1024,11 +1037,22 @@ class KoreaderAction(InterfaceAction):
         # never call get_metadata() for them. Mirrors the status/percent filter
         # applied below: keep books whose status is blank or "reading" AND whose
         # percent read is blank or < 100. Everything else is dropped up front.
-        books_with_md5 = db.search(
+        query = (
             f'{md5_column}:true '
             f'and ({status_key}:false or {status_key}:"=reading") '
             f'and ({read_percent_key}:false or {read_percent_key}:<100)'
         )
+        # Retry cooldown (fix #2): if the optional next-retry column is mapped and
+        # this isn't a forced full rescan, also skip books whose next-retry date is
+        # still in the future. Books marked "reading" are always included, so an
+        # active read is never held back by the cooldown.
+        if next_retry_key and not ignore_cooldown:
+            today_str = datetime.now(tz=local_tz).strftime('%Y-%m-%d')
+            query += (
+                f' and ({status_key}:"=reading" '
+                f'or {next_retry_key}:false or {next_retry_key}:<={today_str})'
+            )
+        books_with_md5 = db.search(query)
 
         results = []
         num_success = 0
@@ -1071,6 +1095,15 @@ class KoreaderAction(InterfaceAction):
                             # No server record for this book — count it, but don't
                             # add a (title-less) row to the results table.
                             num_no_entry += 1
+                            # Retry cooldown (fix #2): if the next-retry column is
+                            # mapped and the book isn't actively being read, stamp a
+                            # future date so it's skipped until the cooldown passes.
+                            if next_retry_key and cooldown_days and metadata_status != "reading":
+                                metadata.set(
+                                    next_retry_key,
+                                    datetime.now(tz=local_tz) + timedelta(days=cooldown_days))
+                                db.set_metadata(
+                                    book_id, metadata, set_title=False, set_authors=False)
                             continue
                         progress_data = json.loads(response_data.decode('utf-8'))
 
@@ -1408,6 +1441,11 @@ class KoreaderAction(InterfaceAction):
 
                         if target == '':
                             # No column mapped, so do not sync
+                            continue
+
+                        # Plugin-managed columns (e.g. next-retry) aren't sourced
+                        # from the sidecar; skip them in this sync direction.
+                        if column.get('data_source') != 'sidecar':
                             continue
 
                         # Special handling for date started/finished
