@@ -1010,7 +1010,9 @@ class KoreaderAction(InterfaceAction):
 
         results = []
         num_success = 0
-        num_skip = 0
+        num_no_entry = 0       # server has no record for this MD5
+        num_failed = 0         # network/server error during the query
+        num_already_read = 0   # locally skipped by status/percent filter
 
         headers = {
             'x-auth-user': CONFIG["progress_sync_username"],
@@ -1044,11 +1046,9 @@ class KoreaderAction(InterfaceAction):
                     with urlopen(request, timeout=20, context=ssl_context) as response:
                         response_data = response.read()
                         if response_data == b'{}':
-                            results.append({
-                                'md5_value': md5_value,
-                                'error': 'No ProgressSync entry for md5 hash'
-                            })
-                            num_skip += 1
+                            # No server record for this book — count it, but don't
+                            # add a (title-less) row to the results table.
+                            num_no_entry += 1
                             continue
                         progress_data = json.loads(response_data.decode('utf-8'))
 
@@ -1129,7 +1129,7 @@ class KoreaderAction(InterfaceAction):
                         'md5_value': md5_value,
                         'error': 'No data received'
                     })
-                    num_skip += 1
+                    num_failed += 1
 
             else:
                 results.append({
@@ -1138,16 +1138,23 @@ class KoreaderAction(InterfaceAction):
                     'md5_value': md5_value,
                     'error': 'Book has already been read'
                 })
-                num_skip += 1
+                num_already_read += 1
 
         if not silent:
             results_message = (
-                f'Total books with MD5 values: {len(books_with_md5)}\n\n'
+                f'Books checked (in progress or unread): {len(books_with_md5)}\n\n'
                 f'Successful syncs: {num_success}\n'
-                f'Failed/Skipped syncs: {num_skip}\n\n'
+                f'No sync-server entry (skipped): {num_no_entry}\n'
+                f'Failed (network/server error): {num_failed}\n'
             )
+            if num_already_read:
+                results_message += f'Already read (skipped): {num_already_read}\n'
+            results_message += '\n'
 
-            if num_success > 0 and num_skip == 0:
+            # Only treat a genuine network/server error as a failure. Books with
+            # no server entry (nothing ever synced) are an expected outcome, not a
+            # bug, so they shouldn't trigger the warning dialog.
+            if num_failed == 0:
                 SyncCompletionDialog(
                     self.gui,
                     'Progress sync finished',
@@ -1155,7 +1162,7 @@ class KoreaderAction(InterfaceAction):
                     results,
                     'info'
                 )
-            elif num_skip > 0:
+            else:
                 SyncCompletionDialog(
                     self.gui,
                     'Some syncs failed',
@@ -1163,15 +1170,6 @@ class KoreaderAction(InterfaceAction):
                     'Please investigate and report if it looks like a bug\n\n',
                     results,
                     'warn'
-                )
-            else:
-                SyncCompletionDialog(
-                    self.gui,
-                    'No successful syncs',
-                    results_message + 'No successful syncs\n'
-                    'Please investigate and report if it looks like a bug\n\n',
-                    results,
-                    'error'
                 )
 
     def scheduled_progress_sync(self):
@@ -1556,5 +1554,9 @@ class SyncCompletionDialog(QDialog):
             wrapped = '\n'.join(lines)
             table.setHorizontalHeaderItem(col, QTableWidgetItem(wrapped))
         table.horizontalHeader().setFixedHeight(20 * max_lines)  # Default = 20
+
+        # Clickable header sorting (string sort; enabled after population so the
+        # row insert above isn't reordered mid-fill).
+        table.setSortingEnabled(True)
 
         return table
