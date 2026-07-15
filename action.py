@@ -1052,7 +1052,10 @@ class KoreaderAction(InterfaceAction):
                 f' and ({status_key}:"=reading" '
                 f'or {next_retry_key}:false or {next_retry_key}:<={today_str})'
             )
-        books_with_md5 = db.search(query)
+        # Materialise the search result into a list: db.search() returns a live
+        # set tied to calibre's cache, and stamping the next-retry column below
+        # writes to the DB mid-loop, which would mutate that set during iteration.
+        books_with_md5 = list(db.search(query))
 
         results = []
         num_success = 0
