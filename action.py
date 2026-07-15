@@ -1006,7 +1006,15 @@ class KoreaderAction(InterfaceAction):
 
         'Get list of books with MD5 column'
         db = self.gui.current_db.new_api
-        books_with_md5 = db.search(f'{md5_column}:!''')
+        # Exclude books that are already finished/read at the query level so we
+        # never call get_metadata() for them. Mirrors the status/percent filter
+        # applied below: keep books whose status is blank or "reading" AND whose
+        # percent read is blank or < 100. Everything else is dropped up front.
+        books_with_md5 = db.search(
+            f'{md5_column}:true '
+            f'and ({status_key}:false or {status_key}:"=reading") '
+            f'and ({read_percent_key}:false or {read_percent_key}:<100)'
+        )
 
         results = []
         num_success = 0
