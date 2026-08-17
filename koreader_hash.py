@@ -18,10 +18,111 @@ algorithm: franssjz/cpr-vcodex's lib/KOReaderSync/KOReaderDocumentId.cpp.
 """
 
 import hashlib
+import json
 import os
+import re
 
 CHUNK_SIZE = 1024
 OFFSET_COUNT = 12
+
+# Formats KOReader can open, in the order we prefer to hash them when a book
+# has more than one and there is no better signal available. EPUB first
+# because it is the most common and the format KOReader handles best; CBZ
+# next, because comics are the usual reason a book has no EPUB at all.
+#
+# The hash itself is format-agnostic - partialMD5() reads bytes at fixed
+# offsets and knows nothing about the container - so this list only decides
+# *which file* to hash, never whether hashing is possible at all.
+KOREADER_FORMATS = (
+    'EPUB', 'CBZ', 'CBR', 'FB2', 'MOBI', 'AZW3', 'AZW', 'PRC',
+    'PDF', 'DJVU', 'DJV', 'CHM', 'RTF', 'HTMLZ', 'DOC', 'TXT', 'ZIP',
+)
+
+
+def doc_path_from_sidecar(sidecar_value):
+    """Pull `doc_path` out of a stored KOReader metadata sidecar.
+
+    The sidecar column holds the sidecar's contents, which record the book's
+    path *on the device* - the one piece of direct evidence about which format
+    that device actually holds. The column is free-form text (JSON, sometimes
+    escaped or wrapped in markup for display), so this parses defensively and
+    gives up quietly rather than raising.
+
+    :param sidecar_value: stored sidecar column value, or None
+    :return: the recorded device path, or None if it can't be determined
+    """
+    if not sidecar_value:
+        return None
+
+    text = str(sidecar_value)
+    try:
+        return json.loads(text).get('doc_path') or None
+    except (ValueError, AttributeError):
+        pass
+
+    # Fall back to reading the field directly, which survives the value having
+    # been escaped or wrapped in markup somewhere along the way.
+    match = re.search(r'"doc_path"\s*:\s*"(.*?)(?<!\\)"', text)
+    if not match:
+        return None
+
+    return match.group(1).replace('\\/', '/').replace('\\\\', '\\') or None
+
+
+def format_from_device_path(device_path):
+    """Extract a Calibre format name from a path recorded by a device.
+
+    KOReader's metadata sidecar records the full path of the file as it exists
+    on the device, e.g. `/mnt/us/library/Some Book.cbz`. Its extension is the
+    only direct evidence of which format the device actually holds, which is
+    the format whose hash will match what the device reports.
+
+    :param device_path: a path string, or None
+    :return: upper-case format name (e.g. 'CBZ'), or None if not determinable
+    """
+    if not device_path:
+        return None
+
+    extension = os.path.splitext(str(device_path).strip())[1]
+    if not extension:
+        return None
+
+    return extension.lstrip('.').upper() or None
+
+
+def choose_format_to_hash(available_formats, device_path=None):
+    """Pick which of a book's formats to hash.
+
+    Resolution order:
+
+    1. The format the device itself holds, taken from `device_path` (typically
+       the sidecar's `doc_path`), when the book actually has that format.
+    2. The first entry of KOREADER_FORMATS the book has.
+
+    Hashing a format the device doesn't have produces a valid-looking hash
+    that can never match anything - worse than no hash, because the column
+    then looks populated. Hence preferring the device's own evidence.
+
+    :param available_formats: iterable of Calibre format names for the book
+    :param device_path: path recorded by the device, if known
+    :return: chosen format name, or None if the book has nothing KOReader reads
+    """
+    available = {str(fmt).upper() for fmt in available_formats or () if fmt}
+    if not available:
+        return None
+
+    # A sidecar exists only because KOReader itself opened that file, so the
+    # format it names is readable by definition - trusted even if it isn't in
+    # the preference list below, which is necessarily incomplete.
+    device_format = format_from_device_path(device_path)
+    if device_format and device_format in available:
+        return device_format
+
+    for fmt in KOREADER_FORMATS:
+        if fmt in available:
+            return fmt
+
+    return None
 
 
 def _offset_for_index(i):

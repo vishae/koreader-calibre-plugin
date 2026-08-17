@@ -37,7 +37,11 @@ from PyQt5.Qt import (
 )
 
 from calibre_plugins.koreader.slpp import slpp as lua
-from calibre_plugins.koreader.koreader_hash import calculate_koreader_md5
+from calibre_plugins.koreader.koreader_hash import (
+    calculate_koreader_md5,
+    choose_format_to_hash,
+    doc_path_from_sidecar,
+)
 from calibre_plugins.koreader.config import (
     SUPPORTED_DEVICES,
     UNSUPPORTED_DEVICES,
@@ -238,10 +242,11 @@ class KoreaderAction(InterfaceAction):
             'Calculate Missing MD5 Hashes',
             icon='convert.png',
             description="Compute KOReader's document hash locally from each "
-                        "book's EPUB file and fill in the MD5 column for "
-                        "books that don't have one yet - useful for devices "
-                        "that push straight to ProgressSync without ever "
-                        "running real KOReader software (see issue #150).",
+                        "book's file and fill in the MD5 column for books "
+                        "that don't have one yet - useful for devices that "
+                        "push straight to ProgressSync without ever running "
+                        "real KOReader software (see issue #150). Works with "
+                        "any format KOReader can read, not just EPUB.",
             triggered=self.calculate_missing_md5_hashes
         )
 
@@ -1258,10 +1263,13 @@ class KoreaderAction(InterfaceAction):
             )
             return None
 
+        sidecar_column = CONFIG["column_sidecar"]
+
         db = self.gui.current_db.new_api
         results = []
         num_calculated = 0
-        num_skipped = 0
+        num_skipped_no_format = 0
+        num_skipped_unreadable = 0
 
         for book_id in db.all_book_ids():
             metadata = db.get_metadata(book_id)
@@ -1269,15 +1277,30 @@ class KoreaderAction(InterfaceAction):
                 continue  # already has a hash - don't overwrite it
 
             title = metadata.get('title')
-            file_path = db.format_abspath(book_id, 'EPUB')
+
+            # Prefer whatever format the device itself holds, when the sidecar
+            # tells us - hashing a format the device doesn't have would look
+            # populated while never matching anything.
+            device_path = None
+            if sidecar_column:
+                device_path = doc_path_from_sidecar(
+                    metadata.get(sidecar_column))
+
+            book_format = choose_format_to_hash(
+                db.formats(book_id), device_path)
+            if not book_format:
+                num_skipped_no_format += 1
+                continue
+
+            file_path = db.format_abspath(book_id, book_format)
             if not file_path:
-                num_skipped += 1
+                num_skipped_no_format += 1
                 continue
 
             md5_value = calculate_koreader_md5(file_path)
             if not md5_value:
                 debug_print(f'could not hash {title} ({file_path})')
-                num_skipped += 1
+                num_skipped_unreadable += 1
                 continue
 
             if DEBUG and DRY_RUN:
@@ -1288,13 +1311,20 @@ class KoreaderAction(InterfaceAction):
                 db.set_metadata(
                     book_id, metadata, set_title=False, set_authors=False)
 
-            results.append({'title': title, 'md5_value': md5_value})
+            results.append({
+                'title': title,
+                'format': book_format,
+                'md5_value': md5_value,
+            })
             num_calculated += 1
 
         if not silent:
             results_message = (
                 f'Calculated MD5 hashes: {num_calculated}\n'
-                f'Skipped (no EPUB format found): {num_skipped}\n\n'
+                f'Skipped (no format KOReader can read): '
+                f'{num_skipped_no_format}\n'
+                f'Skipped (file missing or unreadable): '
+                f'{num_skipped_unreadable}\n\n'
             )
 
             if num_calculated > 0:
