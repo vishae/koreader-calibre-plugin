@@ -56,6 +56,7 @@ calibre_gui2.device = MagicMock()
 calibre_gui2.show_restart_warning = MagicMock()
 calibre_gui2.error_dialog = MagicMock()
 calibre_gui2.warning_dialog = MagicMock()
+calibre_gui2.info_dialog = MagicMock()
 calibre_gui2.open_url = MagicMock()
 
 # Setup calibre.gui2.dialogs
@@ -64,6 +65,11 @@ calibre_gui2_dialogs.__path__ = []
 calibre_gui2.dialogs = calibre_gui2_dialogs
 sys.modules["calibre.gui2.dialogs"] = calibre_gui2_dialogs
 calibre_gui2_dialogs.message_box = MagicMock()
+calibre_gui2_dialogs.confirm_delete = types.ModuleType(
+    "calibre.gui2.dialogs.confirm_delete")
+calibre_gui2_dialogs.confirm_delete.confirm = MagicMock(return_value=True)
+sys.modules["calibre.gui2.dialogs.confirm_delete"] = (
+    calibre_gui2_dialogs.confirm_delete)
 calibre_gui2_dialogs.message_box.MessageBox = MagicMock()
 
 # Assign to sys.modules

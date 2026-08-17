@@ -61,9 +61,11 @@ from calibre.gui2.actions import InterfaceAction
 from calibre.gui2.device import device_signals
 from calibre.gui2 import (
     error_dialog,
+    info_dialog,
     warning_dialog,
     open_url,
 )
+from calibre.gui2.dialogs.confirm_delete import confirm
 from calibre.devices.usbms.driver import debug_print as root_debug_print, USBMS
 from calibre.constants import numeric_version
 from enum import Enum, auto
@@ -248,6 +250,32 @@ class KoreaderAction(InterfaceAction):
                         "real KOReader software (see issue #150). Works with "
                         "any format KOReader can read, not just EPUB.",
             triggered=self.calculate_missing_md5_hashes
+        )
+
+        self.create_menu_action(
+            self.qaction.menu(),
+            'Check MD5 Hashes',
+            'Check MD5 Hashes',
+            icon='search.png',
+            description="Report any stored MD5 hash that no longer matches "
+                        "its book file - which is what happens whenever a "
+                        "library file is rewritten by editing metadata, "
+                        "converting or polishing. ProgressSync silently does "
+                        "nothing for such a book. Read-only: nothing is "
+                        "changed.",
+            triggered=self.check_md5_hashes
+        )
+
+        self.create_menu_action(
+            self.qaction.menu(),
+            'Recalculate MD5 Hashes (selected books)',
+            'Recalculate MD5 Hashes (selected books)',
+            icon='edit-redo.png',
+            description="Recompute and overwrite the MD5 hash for the books "
+                        "currently selected, including hashes learned from a "
+                        "real KOReader device. Use after 'Check MD5 Hashes' "
+                        "reports a stale hash.",
+            triggered=self.recalculate_md5_hashes
         )
 
         self.create_menu_action(
@@ -1241,6 +1269,257 @@ class KoreaderAction(InterfaceAction):
                     'warn'
                 )
 
+    def hash_one_book(self, db, book_id, metadata, sidecar_column,
+                      device_formats):
+        """Resolve a book's format and hash the library file for it.
+
+        Shared by every action that needs a book's current hash, so they can
+        never disagree about which format a book should be judged on.
+
+        :return: (md5 or None, format or None, source or None, skip reason or
+            None). Exactly one of md5 / skip reason is set.
+        """
+        device_path = None
+        if sidecar_column:
+            device_path = doc_path_from_sidecar(metadata.get(sidecar_column))
+
+        book_format, format_source = resolve_format(
+            db.formats(book_id),
+            device_format=device_formats.get(book_id),
+            device_path=device_path)
+        if not book_format:
+            return None, None, None, 'no format'
+
+        file_path = db.format_abspath(book_id, book_format)
+        if not file_path:
+            return None, book_format, format_source, 'no format'
+
+        md5_value = calculate_koreader_md5(file_path)
+        if not md5_value:
+            return None, book_format, format_source, 'unreadable'
+
+        return md5_value, book_format, format_source, None
+
+    def check_md5_hashes(self, silent=False):
+        """Report which stored MD5 hashes no longer match their file.
+
+        A stored hash silently ceasing to describe its book is the failure
+        mode behind 26017-BUG-007: ProgressSync just quietly does nothing for
+        that book, and "Calculate Missing MD5 Hashes" won't touch it because
+        the column isn't empty. Anything that rewrites a library file -
+        editing metadata, converting, polishing - causes it.
+
+        Read-only: this reports drift, it never writes. Use "Recalculate MD5
+        Hashes (selected books)" to act on what it finds.
+        """
+        debug_print = partial(
+            module_debug_print, 'KoreaderAction:check_md5_hashes:')
+
+        md5_column = CONFIG["column_md5"]
+        if md5_column == '':
+            error_dialog(
+                self.gui,
+                'Failure',
+                'MD5 column not mapped, impossible to check MD5 hashes',
+                show=True,
+                show_copy_button=False
+            )
+            return None
+
+        sidecar_column = CONFIG["column_sidecar"]
+        device_formats = load_device_format_map(CONFIG["device_books_folder"])
+
+        db = self.gui.current_db.new_api
+        results = []
+        num_matched = 0
+        num_stale = 0
+        num_no_format = 0
+        num_unreadable = 0
+
+        for book_id in db.all_book_ids():
+            metadata = db.get_metadata(book_id)
+            stored = metadata.get(md5_column)
+            if not stored:
+                continue  # nothing to check - that's the calculator's job
+
+            title = metadata.get('title')
+            md5_value, book_format, format_source, skipped = self.hash_one_book(
+                db, book_id, metadata, sidecar_column, device_formats)
+
+            if skipped == 'no format':
+                num_no_format += 1
+                continue
+            if skipped == 'unreadable':
+                num_unreadable += 1
+                results.append({
+                    'title': title,
+                    'format': book_format,
+                    'stored_md5': str(stored),
+                    'computed_md5': '',
+                    'result': 'File missing or unreadable',
+                })
+                continue
+
+            if str(stored).strip().lower() == md5_value:
+                num_matched += 1
+                continue
+
+            num_stale += 1
+            debug_print(f'stale hash for {title}: stored {stored}, '
+                        f'computed {md5_value} from {book_format}')
+            results.append({
+                'title': title,
+                'format': book_format,
+                'format_from': format_source,
+                'stored_md5': str(stored),
+                'computed_md5': md5_value,
+                'result': 'Stale - no longer matches the file',
+            })
+
+        if not silent:
+            results_message = (
+                f'Stored hashes checked: {num_matched + num_stale}\n'
+                f'Matching their file: {num_matched}\n'
+                f'Stale (no longer match): {num_stale}\n'
+                f'File missing or unreadable: {num_unreadable}\n'
+                f'Skipped (no format KOReader can read): {num_no_format}\n\n'
+                'Nothing has been changed. To fix a stale hash, select those '
+                'books and run "Recalculate MD5 Hashes (selected books)".\n\n'
+            )
+
+            if results:
+                SyncCompletionDialog(
+                    self.gui,
+                    'MD5 hash check finished',
+                    results_message,
+                    results,
+                    'warn' if num_stale else 'info'
+                )
+            else:
+                info_dialog(
+                    self.gui,
+                    'All MD5 hashes match',
+                    results_message,
+                    show=True
+                )
+
+        return results
+
+    def recalculate_md5_hashes(self, silent=False):
+        """Recompute and overwrite the MD5 hash for the selected books.
+
+        Deliberately scoped to the selection and confirmed first. The existing
+        "Calculate Missing MD5 Hashes" never overwrites, which is what lets a
+        wrong hash persist forever; this is the escape hatch, but a blind
+        whole-library overwrite would be a good way to destroy hashes learned
+        from a real KOReader device.
+        """
+        debug_print = partial(
+            module_debug_print, 'KoreaderAction:recalculate_md5_hashes:')
+
+        md5_column = CONFIG["column_md5"]
+        if md5_column == '':
+            error_dialog(
+                self.gui,
+                'Failure',
+                'MD5 column not mapped, impossible to recalculate MD5 hashes',
+                show=True,
+                show_copy_button=False
+            )
+            return None
+
+        rows = self.gui.library_view.selectionModel().selectedRows()
+        if not rows:
+            error_dialog(
+                self.gui,
+                'No books selected',
+                'Select the books whose MD5 hashes you want to recalculate, '
+                'then run this again. "Check MD5 Hashes" will tell you which '
+                'ones are stale.',
+                show=True,
+                show_copy_button=False
+            )
+            return None
+
+        book_ids = [self.gui.library_view.model().id(row) for row in rows]
+
+        if not silent and not confirm(
+                f'Recalculate the KOReader MD5 hash for {len(book_ids)} '
+                'selected book(s)?\n\nThis overwrites the stored value, '
+                'including any hash learned from a real KOReader device. '
+                'Hashes for books not selected are left alone.',
+                'koreader_recalculate_md5',
+                self.gui):
+            return None
+
+        sidecar_column = CONFIG["column_sidecar"]
+        device_formats = load_device_format_map(CONFIG["device_books_folder"])
+
+        db = self.gui.current_db.new_api
+        results = []
+        num_changed = 0
+        num_unchanged = 0
+        num_skipped = 0
+
+        for book_id in book_ids:
+            metadata = db.get_metadata(book_id)
+            title = metadata.get('title')
+            stored = metadata.get(md5_column)
+
+            md5_value, book_format, format_source, skipped = self.hash_one_book(
+                db, book_id, metadata, sidecar_column, device_formats)
+            if skipped:
+                num_skipped += 1
+                results.append({
+                    'title': title,
+                    'format': book_format or '',
+                    'stored_md5': str(stored or ''),
+                    'computed_md5': '',
+                    'result': ('No format KOReader can read'
+                               if skipped == 'no format'
+                               else 'File missing or unreadable'),
+                })
+                continue
+
+            if str(stored or '').strip().lower() == md5_value:
+                num_unchanged += 1
+                continue
+
+            if DEBUG and DRY_RUN:
+                debug_print(
+                    f'would have set {md5_column} = {md5_value} for {title}')
+            else:
+                metadata.set(md5_column, md5_value)
+                db.set_metadata(
+                    book_id, metadata, set_title=False, set_authors=False)
+
+            num_changed += 1
+            results.append({
+                'title': title,
+                'format': book_format,
+                'format_from': format_source,
+                'stored_md5': str(stored or '(empty)'),
+                'computed_md5': md5_value,
+                'result': 'Updated',
+            })
+
+        if not silent:
+            results_message = (
+                f'Books selected: {len(book_ids)}\n'
+                f'Hashes updated: {num_changed}\n'
+                f'Already correct: {num_unchanged}\n'
+                f'Skipped: {num_skipped}\n\n'
+            )
+            SyncCompletionDialog(
+                self.gui,
+                'MD5 recalculation finished',
+                results_message,
+                results,
+                'info'
+            )
+
+        return results
+
     def calculate_missing_md5_hashes(self, silent=False):
         """Fill in the KOReader MD5 hash for books that don't have one yet.
 
@@ -1296,27 +1575,13 @@ class KoreaderAction(InterfaceAction):
             # the device doesn't have would look populated while never matching
             # anything. The device cache is the strongest evidence; a sidecar's
             # doc_path is the fallback for books no longer on the device.
-            device_path = None
-            if sidecar_column:
-                device_path = doc_path_from_sidecar(
-                    metadata.get(sidecar_column))
-
-            book_format, format_source = resolve_format(
-                db.formats(book_id),
-                device_format=device_formats.get(book_id),
-                device_path=device_path)
-            if not book_format:
+            md5_value, book_format, format_source, skipped = self.hash_one_book(
+                db, book_id, metadata, sidecar_column, device_formats)
+            if skipped == 'no format':
                 num_skipped_no_format += 1
                 continue
-
-            file_path = db.format_abspath(book_id, book_format)
-            if not file_path:
-                num_skipped_no_format += 1
-                continue
-
-            md5_value = calculate_koreader_md5(file_path)
-            if not md5_value:
-                debug_print(f'could not hash {title} ({file_path})')
+            if skipped == 'unreadable':
+                debug_print(f'could not hash {title} ({book_format})')
                 num_skipped_unreadable += 1
                 continue
 
