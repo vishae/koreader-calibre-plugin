@@ -1331,6 +1331,7 @@ class KoreaderAction(InterfaceAction):
 
         db = self.gui.current_db.new_api
         results = []
+        stale_ids = []
         num_matched = 0
         num_stale = 0
         num_no_format = 0
@@ -1365,16 +1366,30 @@ class KoreaderAction(InterfaceAction):
                 continue
 
             num_stale += 1
+            stale_ids.append(book_id)
             debug_print(f'stale hash for {title}: stored {stored}, '
                         f'computed {md5_value} from {book_format}')
             results.append({
                 'title': title,
+                'book_id': book_id,
                 'format': book_format,
                 'format_from': format_source,
                 'stored_md5': str(stored),
                 'computed_md5': md5_value,
                 'result': 'Stale - no longer matches the file',
             })
+
+        # Mark the stale books so they can be pulled up in one search rather
+        # than picked out of the results table by hand. Marking is transient
+        # and changes no metadata.
+        marked_search = ''
+        if stale_ids:
+            try:
+                db.set_marked_ids({book_id: 'koreader_stale'
+                                   for book_id in stale_ids})
+                marked_search = 'marked:koreader_stale'
+            except Exception as e:  # pylint: disable=broad-exception-caught
+                debug_print(f'could not mark stale books: {e}')
 
         if not silent:
             results_message = (
@@ -1383,9 +1398,15 @@ class KoreaderAction(InterfaceAction):
                 f'Stale (no longer match): {num_stale}\n'
                 f'File missing or unreadable: {num_unreadable}\n'
                 f'Skipped (no format KOReader can read): {num_no_format}\n\n'
-                'Nothing has been changed. To fix a stale hash, select those '
-                'books and run "Recalculate MD5 Hashes (selected books)".\n\n'
+                'Nothing has been changed.\n\n'
             )
+            if marked_search:
+                results_message += (
+                    f'The {num_stale} stale book(s) have been marked. Search '
+                    f'for  {marked_search}  in your library to pull just those '
+                    'up, select them all, then run "Recalculate MD5 Hashes '
+                    '(selected books)".\n\n'
+                )
 
             if results:
                 SyncCompletionDialog(

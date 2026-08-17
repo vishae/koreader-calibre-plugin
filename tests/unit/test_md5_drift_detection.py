@@ -164,3 +164,39 @@ class TestRecalculateIsScoped:
 
     def test_asks_for_confirmation_before_overwriting(self):
         assert 'confirm(' in self.source()
+
+
+class TestStaleBooksAreMarked:
+    """Counting stale books is useless if you then have to find them by hand.
+
+    Calibre's marks are transient and change no metadata, so marking is safe
+    to do from a read-only action and turns "12 stale" into a one-search
+    selection.
+    """
+
+    @staticmethod
+    def source():
+        import inspect
+        return inspect.getsource(action.KoreaderAction.check_md5_hashes)
+
+    def test_stale_books_are_marked(self):
+        assert 'set_marked_ids' in self.source()
+
+    def test_the_mark_is_named_rather_than_generic(self):
+        # A named mark can be searched for specifically and won't be confused
+        # with marks left by other plugins or by the user.
+        assert 'koreader_stale' in self.source()
+
+    def test_the_search_term_is_given_to_the_user(self):
+        assert 'marked:koreader_stale' in self.source()
+
+    def test_marking_failure_does_not_abort_the_check(self):
+        # Marking is a convenience; if calibre's API shifts under us the
+        # report itself must still be delivered.
+        src = self.source()
+        marking = src[src.index('set_marked_ids'):]
+        assert 'except' in marking[:400]
+
+    def test_book_ids_are_included_in_the_results(self):
+        # So a stale row can be cross-referenced even without the mark.
+        assert "'book_id': book_id" in self.source()
