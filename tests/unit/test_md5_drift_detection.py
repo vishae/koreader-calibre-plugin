@@ -182,6 +182,18 @@ class TestStaleBooksAreMarked:
     def test_stale_books_are_marked(self):
         assert 'set_marked_ids' in self.source()
 
+    def test_marks_are_set_on_the_view_not_on_new_api(self):
+        # set_marked_ids lives on calibre.db.view.View, reached as
+        # gui.current_db.data. Calling it on new_api raises AttributeError,
+        # which is how the first attempt silently did nothing.
+        assert 'current_db.data.set_marked_ids' in self.source()
+        assert 'db.set_marked_ids' not in self.source()
+
+    def test_the_library_view_is_filtered_to_the_stale_books(self):
+        # Telling the user a search term they then have to type is a step
+        # too many; run the search for them.
+        assert 'set_search_string' in self.source()
+
     def test_the_mark_is_named_rather_than_generic(self):
         # A named mark can be searched for specifically and won't be confused
         # with marks left by other plugins or by the user.
@@ -196,6 +208,13 @@ class TestStaleBooksAreMarked:
         src = self.source()
         marking = src[src.index('set_marked_ids'):]
         assert 'except' in marking[:400]
+
+    def test_marking_failure_is_reported_rather_than_swallowed(self):
+        # The first version caught the failure and said nothing, so the
+        # feature appeared to work while doing nothing at all.
+        src = self.source()
+        assert 'mark_error' in src
+        assert 'Could not mark the stale books' in src
 
     def test_book_ids_are_included_in_the_results(self):
         # So a stale row can be cross-referenced even without the mark.

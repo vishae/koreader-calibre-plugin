@@ -1379,16 +1379,20 @@ class KoreaderAction(InterfaceAction):
                 'result': 'Stale - no longer matches the file',
             })
 
-        # Mark the stale books so they can be pulled up in one search rather
-        # than picked out of the results table by hand. Marking is transient
-        # and changes no metadata.
+        # Mark the stale books and show them, so acting on the result is one
+        # step rather than hunting titles out of a table. Marks live on the
+        # View (self.gui.current_db.data), not on new_api, and are transient -
+        # nothing is written to the library.
         marked_search = ''
+        mark_error = ''
         if stale_ids:
             try:
-                db.set_marked_ids({book_id: 'koreader_stale'
-                                   for book_id in stale_ids})
+                self.gui.current_db.data.set_marked_ids(
+                    {book_id: 'koreader_stale' for book_id in stale_ids})
                 marked_search = 'marked:koreader_stale'
+                self.gui.search.set_search_string(marked_search)
             except Exception as e:  # pylint: disable=broad-exception-caught
+                mark_error = str(e)
                 debug_print(f'could not mark stale books: {e}')
 
         if not silent:
@@ -1402,10 +1406,17 @@ class KoreaderAction(InterfaceAction):
             )
             if marked_search:
                 results_message += (
-                    f'The {num_stale} stale book(s) have been marked. Search '
-                    f'for  {marked_search}  in your library to pull just those '
-                    'up, select them all, then run "Recalculate MD5 Hashes '
-                    '(selected books)".\n\n'
+                    f'The library view is now filtered to the {num_stale} '
+                    f'stale book(s) - the search box has been set to '
+                    f'{marked_search}. Select them all and run "Recalculate '
+                    'MD5 Hashes (selected books)" to fix them. Clear the '
+                    'search box to see your whole library again.\n\n'
+                )
+            elif stale_ids:
+                results_message += (
+                    'Could not mark the stale books, so they have not been '
+                    f'filtered in the library view: {mark_error}\n'
+                    'The table below still lists them, with their book ids.\n\n'
                 )
 
             if results:
