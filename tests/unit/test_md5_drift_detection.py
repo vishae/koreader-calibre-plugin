@@ -219,3 +219,24 @@ class TestStaleBooksAreMarked:
     def test_book_ids_are_included_in_the_results(self):
         # So a stale row can be cross-referenced even without the mark.
         assert "'book_id': book_id" in self.source()
+
+
+class TestResultsDialogWrapsItsMessage:
+    """A dialog message that runs off the edge loses the instructions it was
+    written to deliver - which is what happened to the marking guidance."""
+
+    @staticmethod
+    def source():
+        import inspect
+        return inspect.getsource(action.SyncCompletionDialog.__init__)
+
+    def test_the_message_label_wraps(self):
+        assert 'setWordWrap(True)' in self.source()
+
+    def test_the_label_is_given_room_to_wrap_into(self):
+        # Word wrap alone isn't enough: with no stretch factor the label
+        # takes its natural width and wraps at nothing useful.
+        assert 'addWidget(message_label, 1)' in self.source()
+
+    def test_the_message_can_be_selected_and_copied(self):
+        assert 'TextSelectableByMouse' in self.source()

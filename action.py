@@ -1974,8 +1974,14 @@ class SyncCompletionDialog(QDialog):
             icon_widget.setPixmap(icon.pixmap(64, 64))
             mainMessageLayout.addWidget(icon_widget)
         message_label = QLabel(msg)
-        mainMessageLayout.addWidget(message_label)
-        mainMessageLayout.addStretch()  # Left align the message/text
+        # Without word wrap a long line just runs off the dialog and is lost -
+        # the label takes its natural width and nothing constrains it. The
+        # stretch factor gives it the remaining width to wrap into; QLabel
+        # still left-aligns its text, so the previous addStretch() isn't
+        # needed and would only squeeze the label back to one line.
+        message_label.setWordWrap(True)
+        message_label.setTextInteractionFlags(Qt.TextSelectableByMouse)
+        mainMessageLayout.addWidget(message_label, 1)
         layout.addLayout(mainMessageLayout)
 
         # Table in scrollable area if results are provided
