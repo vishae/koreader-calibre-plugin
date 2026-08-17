@@ -38,8 +38,9 @@ from PyQt5.Qt import (
 from calibre_plugins.koreader.slpp import slpp as lua
 from calibre_plugins.koreader.koreader_hash import (
     calculate_koreader_md5,
-    choose_format_to_hash,
     doc_path_from_sidecar,
+    load_device_format_map,
+    resolve_format,
 )
 from calibre_plugins.koreader.config import (
     SUPPORTED_DEVICES,
@@ -1270,6 +1271,14 @@ class KoreaderAction(InterfaceAction):
 
         sidecar_column = CONFIG["column_sidecar"]
 
+        # What calibre actually put on the device, when we've been told where
+        # to look. Read once for the whole library rather than per book.
+        device_formats = load_device_format_map(CONFIG["device_books_folder"])
+        if CONFIG["device_books_folder"]:
+            debug_print(
+                f'device cache: {len(device_formats)} books found in '
+                f'{CONFIG["device_books_folder"]}')
+
         db = self.gui.current_db.new_api
         results = []
         num_calculated = 0
@@ -1283,16 +1292,19 @@ class KoreaderAction(InterfaceAction):
 
             title = metadata.get('title')
 
-            # Prefer whatever format the device itself holds, when the sidecar
-            # tells us - hashing a format the device doesn't have would look
-            # populated while never matching anything.
+            # Prefer whatever format the device itself holds - hashing a format
+            # the device doesn't have would look populated while never matching
+            # anything. The device cache is the strongest evidence; a sidecar's
+            # doc_path is the fallback for books no longer on the device.
             device_path = None
             if sidecar_column:
                 device_path = doc_path_from_sidecar(
                     metadata.get(sidecar_column))
 
-            book_format = choose_format_to_hash(
-                db.formats(book_id), device_path)
+            book_format, format_source = resolve_format(
+                db.formats(book_id),
+                device_format=device_formats.get(book_id),
+                device_path=device_path)
             if not book_format:
                 num_skipped_no_format += 1
                 continue
@@ -1319,6 +1331,7 @@ class KoreaderAction(InterfaceAction):
             results.append({
                 'title': title,
                 'format': book_format,
+                'format_from': format_source,
                 'md5_value': md5_value,
             })
             num_calculated += 1
@@ -1331,6 +1344,13 @@ class KoreaderAction(InterfaceAction):
                 f'Skipped (file missing or unreadable): '
                 f'{num_skipped_unreadable}\n\n'
             )
+
+            from_device = sum(
+                1 for r in results if r.get('format_from') == 'device cache')
+            if CONFIG["device_books_folder"]:
+                results_message += (
+                    f'Format taken from the device cache: {from_device} of '
+                    f'{num_calculated}\n\n')
 
             if num_calculated > 0:
                 SyncCompletionDialog(

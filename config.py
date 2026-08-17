@@ -338,6 +338,7 @@ CONFIG.defaults['progress_sync_password'] = ''
 CONFIG.defaults['scheduleSyncHour'] = 4
 CONFIG.defaults['scheduleSyncMinute'] = 0
 CONFIG.defaults['progress_sync_retry_cooldown_days'] = 7
+CONFIG.defaults['device_books_folder'] = ''
 CONFIG.defaults['main_action'] = 'KOReader Sync'
 
 if numeric_version >= (5, 5, 0):
@@ -476,6 +477,25 @@ class ConfigWidget(QWidget):  # https://doc.qt.io/qt-5/qwidget.html
         retry_cooldown_layout.addWidget(self.retry_cooldown_input)
         layout.addLayout(retry_cooldown_layout)
 
+        # Add device books folder, used to learn which format each book was
+        # actually sent to the device as
+        device_folder_layout = QHBoxLayout()
+        device_folder_layout.setAlignment(Qt.AlignLeft)
+        device_folder_label = QLabel('Device books folder:')
+        device_folder_label.setToolTip(
+            'Optional. The folder calibre sends books to, containing a '
+            '.metadata.calibre file. Used when calculating MD5 hashes to hash '
+            'the format the device actually holds, rather than guessing from a '
+            'preferred-format list. Leave blank to keep the previous behaviour.')
+        device_folder_layout.addWidget(device_folder_label)
+        self.device_folder_input = QLineEdit(self)
+        self.device_folder_input.setText(CONFIG['device_books_folder'])
+        self.device_folder_input.setMinimumWidth(300)
+        self.device_folder_input.setPlaceholderText(
+            'e.g. /config/books - leave blank to disable')
+        device_folder_layout.addWidget(self.device_folder_input)
+        layout.addLayout(device_folder_layout)
+
         # Add ProgressSync Account button
         progress_sync_button = QPushButton('Add ProgressSync Account', self)
         progress_sync_button.clicked.connect(self.show_progress_sync_popup)
@@ -514,6 +534,7 @@ class ConfigWidget(QWidget):  # https://doc.qt.io/qt-5/qwidget.html
         CONFIG['scheduleSyncHour'] = self.schedule_hour_input.value()
         CONFIG['scheduleSyncMinute'] = self.schedule_minute_input.value()
         CONFIG['progress_sync_retry_cooldown_days'] = self.retry_cooldown_input.value()
+        CONFIG['device_books_folder'] = self.device_folder_input.text().strip()
         # NOTE: Server/Credentials are saved by the ProgressSyncPopup
 
         debug_print('new CONFIG = ', CONFIG)

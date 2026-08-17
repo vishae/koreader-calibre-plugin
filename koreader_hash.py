@@ -25,6 +25,10 @@ import re
 CHUNK_SIZE = 1024
 OFFSET_COUNT = 12
 
+# Calibre writes this into the root of a device's book folder, recording what
+# it put there and which library book each file came from.
+DEVICE_CACHE_FILENAME = '.metadata.calibre'
+
 # Formats KOReader can open, in the order we prefer to hash them when a book
 # has more than one and there is no better signal available. EPUB first
 # because it is the most common and the format KOReader handles best; CBZ
@@ -90,39 +94,107 @@ def format_from_device_path(device_path):
     return extension.lstrip('.').upper() or None
 
 
-def choose_format_to_hash(available_formats, device_path=None):
-    """Pick which of a book's formats to hash.
+def load_device_format_map(device_folder):
+    """Read which format each book was actually sent to a device as.
 
-    Resolution order:
+    Calibre writes a `.metadata.calibre` cache into the root of a device's
+    book folder: a JSON array with one entry per book, carrying the library
+    book id (`application_id`) and the file's path on the device (`lpath`).
+    That path's extension is the only direct evidence of which format the
+    device holds, and calibre only ever puts one format of a book on a device,
+    so the mapping is one book to one format.
 
-    1. The format the device itself holds, taken from `device_path` (typically
-       the sidecar's `doc_path`), when the book actually has that format.
-    2. The first entry of KOREADER_FORMATS the book has.
+    Entries whose file is no longer at the recorded path are skipped: caches
+    left behind by an older transfer can name files that no longer exist, and
+    a stale entry is worse than no entry.
 
-    Hashing a format the device doesn't have produces a valid-looking hash
-    that can never match anything - worse than no hash, because the column
-    then looks populated. Hence preferring the device's own evidence.
+    Any problem reading the cache yields an empty map rather than an error -
+    a missing or malformed cache simply means falling back to the other
+    resolution routes.
+
+    :param device_folder: path to the device's book folder, or None
+    :return: dict of {book_id: format name}, possibly empty
+    """
+    if not device_folder:
+        return {}
+
+    cache_path = os.path.join(device_folder, DEVICE_CACHE_FILENAME)
+    try:
+        with open(cache_path, 'rb') as cache_file:
+            entries = json.load(cache_file)
+    except (OSError, ValueError):
+        return {}
+
+    if not isinstance(entries, list):
+        return {}
+
+    formats = {}
+    for entry in entries:
+        if not isinstance(entry, dict):
+            continue
+        book_id = entry.get('application_id')
+        lpath = entry.get('lpath')
+        if book_id is None or not lpath:
+            continue
+        if not os.path.exists(os.path.join(device_folder, lpath)):
+            continue
+        book_format = format_from_device_path(lpath)
+        if book_format:
+            formats[book_id] = book_format
+
+    return formats
+
+
+def resolve_format(available_formats, device_format=None, device_path=None):
+    """Pick which of a book's formats to hash, and say why.
+
+    Resolution order, first hit wins:
+
+    1. `device_format` - what calibre actually sent, from the device's
+       `.metadata.calibre` cache. The strongest evidence available.
+    2. `device_path` - the format named by a KOReader sidecar's `doc_path`.
+       A sidecar exists only because KOReader opened that file, so its format
+       is readable by definition, and is trusted even when the preference list
+       below doesn't contain it.
+    3. The first entry of KOREADER_FORMATS the book has.
+
+    Hashing a format the device doesn't hold produces a valid-looking hash
+    that can never match anything - worse than no hash at all, because the
+    column then looks populated.
 
     :param available_formats: iterable of Calibre format names for the book
-    :param device_path: path recorded by the device, if known
-    :return: chosen format name, or None if the book has nothing KOReader reads
+    :param device_format: format the device holds, from the device cache
+    :param device_path: path recorded by a sidecar, if known
+    :return: (format name, source) - source is 'device cache', 'sidecar' or
+        'preference'; both are None if nothing KOReader reads is available
     """
     available = {str(fmt).upper() for fmt in available_formats or () if fmt}
     if not available:
-        return None
+        return None, None
 
-    # A sidecar exists only because KOReader itself opened that file, so the
-    # format it names is readable by definition - trusted even if it isn't in
-    # the preference list below, which is necessarily incomplete.
-    device_format = format_from_device_path(device_path)
-    if device_format and device_format in available:
-        return device_format
+    if device_format and str(device_format).upper() in available:
+        return str(device_format).upper(), 'device cache'
+
+    sidecar_format = format_from_device_path(device_path)
+    if sidecar_format and sidecar_format in available:
+        return sidecar_format, 'sidecar'
 
     for fmt in KOREADER_FORMATS:
         if fmt in available:
-            return fmt
+            return fmt, 'preference'
 
-    return None
+    return None, None
+
+
+def choose_format_to_hash(available_formats, device_path=None,
+                          device_format=None):
+    """Pick which of a book's formats to hash - see resolve_format().
+
+    :return: chosen format name, or None if the book has nothing KOReader reads
+    """
+    return resolve_format(
+        available_formats, device_format=device_format,
+        device_path=device_path)[0]
 
 
 def _offset_for_index(i):
