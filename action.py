@@ -13,7 +13,6 @@ import importlib.util
 import time
 
 from urllib.request import Request, urlopen
-from urllib.error import URLError, HTTPError
 import ssl
 
 from PyQt5.Qt import (
@@ -1183,14 +1182,20 @@ class KoreaderAction(InterfaceAction):
                     })
                     num_success += 1
 
-                except (HTTPError, URLError) as e:
+                # OSError covers the whole network failure surface for one book:
+                # HTTPError and URLError, but also the bare TimeoutError raised
+                # when the socket goes quiet *after* connecting (urlopen only
+                # wraps connect timeouts in URLError), plus ssl.SSLError and
+                # connection resets. Anything here is one book's problem - it
+                # must never abort a rescan that may span hundreds of requests.
+                except OSError as e:
                     msg = f'Failed to make progress sync query: {url}, error: {str(e)}'
                     debug_print(msg)
                     results.append({
                         'title': title,
                         'book_uuid': book_uuid,
                         'md5_value': md5_value,
-                        'error': 'No data received'
+                        'error': 'Timed out' if isinstance(e, TimeoutError) else 'No data received'
                     })
                     num_failed += 1
 
